@@ -2,9 +2,9 @@
 from __future__ import absolute_import
 import json
 import logging
-
 import requests
-from lexicon.providers.base import Provider as BaseProvider
+
+from lexicon.providers.cloudflare import Provider as CloudflareProvider
 
 
 LOGGER = logging.getLogger(__name__)
@@ -15,38 +15,53 @@ NAMESERVER_DOMAINS = ['cloud.ibm.com']
 def provider_parser(subparser):
     """Return the parser for this provider"""
     subparser.add_argument(
-        "--auth-token", help="specify api key for authentication")
+        "--auth-token", help="IBM Cloud API key")
+    subparser.add_argument(
+        "--ibm-crn", help="IBM Cloud Internet Services CRN")
 
 
-class Provider(BaseProvider):
+class Provider(CloudflareProvider):
     """Provider class for IBM Cloud"""
     def __init__(self, config):
         super(Provider, self).__init__(config)
         self.domain_id = None
-        self.api_endpoint = 'https://api.cis.cloud.ibm.com'
+        self.api_endpoint = 'https://api.cis.cloud.ibm.com/v1/{}'.format(
+            self._get_provider_option('ibm_crn').replace('/', '%2F')
+        )
+        self.ibm_auth_token = self.ibm_get_iamtoken()
 
-    def _authenticate(self):
-        # self.domain_id = result['zone_id']
-        pass
+    def ibm_get_iamtoken(self):
+        headers = {
+            "content-type": "application/x-www-form-urlencoded",
+            "accept": "application/json",
+        }
+        params = {
+            "grant_type": "urn:ibm:params:oauth:grant-type:apikey",
+            "apikey": self._get_provider_option('auth_token'),
+        }
+        url = "https://iam.cloud.ibm.com/identity/token"
+        resp = requests.post(url, params, headers=headers, timeout=30)
 
-    # Create record. If record already exists with the same content, do nothing.
-    def _create_record(self, rtype, name, content):
-        return True
+        return resp.json()["access_token"]
 
-    # List all records. Return an empty list if no records found.
-    # type, name and content are used to filter records.
-    # If possible filter during the query, otherwise filter after response is received.
-    def _list_records(self, rtype=None, name=None, content=None):
-        return []
+    def _request(self, action='GET', url='/', data=None, query_params=None):
+        if data is None:
+            data = {}
+        if query_params is None:
+            query_params = {}
+        default_headers = {
+            'accept': 'application/json',
+            'content-type': 'application/json',
+            'x-auth-user-token': 'Bearer {0}'.format(self.ibm_auth_token)
+        }
+        if not url.startswith(self.api_endpoint):
+            url = self.api_endpoint + url
 
-    # Create or update a record.
-    def _update_record(self, identifier, rtype=None, name=None, content=None):
-        return True
+        response = requests.request(action, url, params=query_params,
+                                    data=json.dumps(data),
+                                    headers=default_headers,
+                                    timeout=30)
 
-    # Delete an existing record. If record does not exist, do nothing.
-    def _delete_record(self, identifier=None, rtype=None, name=None, content=None):
-        return True
-
-    # Helpers
-    def _request(self, action='GET', url='', data=None, query_params=None):
-        pass
+        # if the request fails for any reason, throw an error.
+        response.raise_for_status()
+        return response.json()
